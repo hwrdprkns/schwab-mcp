@@ -9,6 +9,7 @@ from schwab_mcp.approvals.base import (
 from schwab_mcp.approvals.discord import (
     DiscordApprovalManager,
     DiscordApprovalSettings,
+    send_discord_notification,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "NoOpApprovalManager",
     "DiscordApprovalManager",
     "DiscordApprovalSettings",
+    "send_discord_notification",
 ]

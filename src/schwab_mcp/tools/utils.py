@@ -27,6 +27,29 @@ class SchwabAPIError(Exception):
         )
 
 
+class SchwabAuthExpiredError(SchwabAPIError):
+    """Raised when Schwab rejects the refresh token (its 7-day window lapsed).
+
+    Surfaced distinctly from a generic :class:`SchwabAPIError` so the operator
+    gets an actionable message instead of an opaque failure.
+    """
+
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        url: str,
+        body: str,
+    ) -> None:
+        # Bypass SchwabAPIError.__init__ to set a clearer, actionable message.
+        Exception.__init__(
+            self,
+            "Schwab authentication has expired (refresh token past its ~7-day "
+            "limit). Run 'schwab-mcp auth' to re-authenticate (browser + 2FA). "
+            f"status={status_code}; url={url}",
+        )
+
+
 def parse_date(value: str | datetime.date | None) -> datetime.date | None:
     """Parse a date from string, date, datetime, or None.
 
@@ -75,6 +98,13 @@ async def call(
     try:
         response.raise_for_status()
     except Exception as exc:
+        body = getattr(response, "text", "") or ""
+        if response.status_code == 401 and "invalid_client" in body:
+            raise SchwabAuthExpiredError(
+                status_code=response.status_code,
+                url=str(response.url),
+                body=body,
+            ) from exc
         raise SchwabAPIError(
             status_code=response.status_code,
             url=response.url,
@@ -109,6 +139,7 @@ __all__ = [
     "call",
     "JSONType",
     "SchwabAPIError",
+    "SchwabAuthExpiredError",
     "ResponseHandler",
     "parse_date",
     "parse_datetime",

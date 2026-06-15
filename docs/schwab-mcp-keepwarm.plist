@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Reference template for the schwab-mcp keep-warm launchd job.
+
+  You normally do NOT edit this by hand: run
+
+      schwab-mcp install-scheduler
+
+  which renders a plist like this to
+  ~/Library/LaunchAgents/com.user.schwab-mcp-keepwarm.plist and loads it.
+
+  Placeholders below ({{...}}) show what install-scheduler fills in.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.schwab-mcp-keepwarm</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{ABSOLUTE_PATH_TO}}/schwab-mcp</string>
+        <string>refresh-token</string>
+    </array>
+
+    <!-- PATH must let `schwab-mcp` and its venv resolve under your user. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+        <!-- Optional: pass Discord creds so the job can post the weekly-login
+             reminder when the 7-day refresh token is near/at its cliff. -->
+        <!--
+        <key>SCHWAB_MCP_DISCORD_TOKEN</key>
+        <string>{{DISCORD_BOT_TOKEN}}</string>
+        <key>SCHWAB_MCP_DISCORD_CHANNEL_ID</key>
+        <string>{{DISCORD_CHANNEL_ID}}</string>
+        -->
+    </dict>
+
+    <!-- Every 30 minutes. Well inside Schwab's hard 7-day refresh window. -->
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>{{DATA_DIR}}/keepwarm.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{DATA_DIR}}/keepwarm.log</string>
+</dict>
+</plist>

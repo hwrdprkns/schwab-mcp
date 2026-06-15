@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from schwab_mcp.tools.utils import SchwabAPIError, call, parse_date, parse_datetime
+from schwab_mcp.tools.utils import (
+    SchwabAPIError,
+    SchwabAuthExpiredError,
+    call,
+    parse_date,
+    parse_datetime,
+)
 
 
 class MockResponse:
@@ -121,6 +127,39 @@ class TestSchwabAPIError:
             run(call(fake_endpoint))
 
         assert exc_info.value.__cause__ is not None
+
+
+class TestSchwabAuthExpiredError:
+    def test_401_invalid_client_raises_expired_with_actionable_message(self):
+        async def fake_endpoint():
+            return MockResponse(
+                status_code=401,
+                url="https://api.schwabapi.com/accounts/accountNumbers",
+                text='{"error":"invalid_client"}',
+                raise_error=True,
+            )
+
+        with pytest.raises(SchwabAuthExpiredError) as exc_info:
+            run(call(fake_endpoint))
+
+        msg = str(exc_info.value)
+        assert "schwab-mcp auth" in msg
+        # It is still a SchwabAPIError so existing handlers keep working.
+        assert isinstance(exc_info.value, SchwabAPIError)
+
+    def test_other_401_stays_generic(self):
+        async def fake_endpoint():
+            return MockResponse(
+                status_code=401,
+                url="https://api.schwabapi.com/accounts",
+                text='{"error":"Unauthorized"}',
+                raise_error=True,
+            )
+
+        with pytest.raises(SchwabAPIError) as exc_info:
+            run(call(fake_endpoint))
+
+        assert not isinstance(exc_info.value, SchwabAuthExpiredError)
 
 
 class TestResponseHandler:

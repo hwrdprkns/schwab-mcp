@@ -15,6 +15,14 @@ from schwab_mcp import tokens
 
 DEFAULT_MAX_TOKEN_AGE_SECONDS = 5 * 24 * 60 * 60
 
+# Schwab refresh tokens have a hard 7-day life that refreshing does NOT roll
+# forward. A re-login (browser + 2FA) is unavoidable once per ~7 days. We treat
+# the true cliff as 7 days and re-auth proactively a small margin before it so a
+# stale-but-refreshable token is never forced into a doomed re-login early.
+REFRESH_TOKEN_LIFETIME_SECONDS = 7 * 24 * 60 * 60
+REAUTH_MARGIN_SECONDS = 12 * 60 * 60  # 12h safety margin -> effective gate ~6.5d
+REAUTH_THRESHOLD_SECONDS = REFRESH_TOKEN_LIFETIME_SECONDS - REAUTH_MARGIN_SECONDS
+
 if TYPE_CHECKING:
     from multiprocessing import Process as ProcessType, Queue as QueueType
 else:  # pragma: no cover - runtime fallback for multiprocess
@@ -36,7 +44,6 @@ def easy_client(
     callback_timeout: float = 300.0,
     interactive: bool = True,
     requested_browser: str | None = None,
-    base_url: str = auth.DEFAULT_BASE_URL,
 ) -> AsyncClient | Client:
     effective_max_token_age = 0 if max_token_age is None else max_token_age
 
@@ -55,7 +62,6 @@ def easy_client(
             token_manager.write,
             asyncio=asyncio,
             enforce_enums=enforce_enums,
-            base_url=base_url,
         )
         logger.info("Loaded token from %s", token_manager.path)
 
@@ -80,7 +86,6 @@ def easy_client(
         callback_timeout=callback_timeout,
         requested_browser=requested_browser,
         interactive=interactive,
-        base_url=base_url,
     )
 
     logger.info(
@@ -100,7 +105,6 @@ def client_from_login_flow(
     callback_timeout: float = 300.0,
     interactive: bool = True,
     requested_browser: str | None = None,
-    base_url: str = auth.DEFAULT_BASE_URL,
 ) -> AsyncClient | Client:
     if callback_timeout is None:
         callback_timeout = 0
@@ -175,7 +179,7 @@ def client_from_login_flow(
             auth.time.sleep(0.1)
 
         # Open the browser
-        auth_context = auth.get_auth_context(client_id, callback_url, base_url=base_url)
+        auth_context = auth.get_auth_context(client_id, callback_url)
 
         if interactive:
             print()
@@ -258,5 +262,4 @@ def client_from_login_flow(
             token_manager.write,
             asyncio=asyncio,
             enforce_enums=enforce_enums,
-            base_url=base_url,
         )

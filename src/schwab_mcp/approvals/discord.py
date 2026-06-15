@@ -17,6 +17,59 @@ from schwab_mcp.approvals.base import (
 logger = logging.getLogger(__name__)
 
 
+async def send_discord_notification(
+    *,
+    token: str,
+    channel_id: int,
+    title: str,
+    description: str,
+    fields: Mapping[str, str] | None = None,
+    timeout: float = 30.0,
+) -> None:
+    """Send a one-off Discord embed and disconnect.
+
+    This is a fire-and-forget notification used outside the long-lived approval
+    flow (e.g. the keep-warm job and the server-startup cliff gate, neither of
+    which has a running :class:`DiscordApprovalManager`). It connects a minimal
+    client, posts a single embed to ``channel_id``, and closes the connection.
+    """
+    intents = discord.Intents.none()
+    client = discord.Client(intents=intents)
+    errors: list[BaseException] = []
+
+    @client.event
+    async def on_ready() -> None:
+        try:
+            channel = client.get_channel(channel_id)
+            if channel is None:
+                channel = await client.fetch_channel(channel_id)
+            if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+                raise RuntimeError("Configured Discord channel is not messageable")
+            embed = discord.Embed(
+                title=title,
+                description=description,
+                colour=discord.Colour.orange(),
+            )
+            for name, value in (fields or {}).items():
+                embed.add_field(name=name, value=str(value), inline=False)
+            await channel.send(embed=embed)
+        except BaseException as exc:  # noqa: BLE001 - surfaced to caller below
+            errors.append(exc)
+        finally:
+            await client.close()
+
+    try:
+        await asyncio.wait_for(client.start(token), timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        errors.append(exc)
+    finally:
+        if not client.is_closed():
+            await client.close()
+
+    if errors:
+        raise errors[0]
+
+
 @dataclass(slots=True, frozen=True)
 class DiscordApprovalSettings:
     """Configuration values required for Discord approvals."""
@@ -317,4 +370,8 @@ class DiscordApprovalManager(ApprovalManager):
         return frozenset(int(user) for user in users)
 
 
-__all__ = ["DiscordApprovalManager", "DiscordApprovalSettings"]
+__all__ = [
+    "DiscordApprovalManager",
+    "DiscordApprovalSettings",
+    "send_discord_notification",
+]

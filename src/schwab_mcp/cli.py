@@ -1,7 +1,11 @@
 import click
+import functools
+import os
+import plistlib
+import shutil
+import subprocess
 import sys
 import anyio
-import os
 from schwab.client import AsyncClient
 
 from schwab_mcp.server import SchwabMCPServer, send_error_response
@@ -11,11 +15,41 @@ from schwab_mcp.approvals import (
     DiscordApprovalManager,
     DiscordApprovalSettings,
     NoOpApprovalManager,
+    send_discord_notification,
 )
 
 
 APP_NAME = "schwab-mcp"
 TOKEN_MAX_AGE_SECONDS = schwab_auth.DEFAULT_MAX_TOKEN_AGE_SECONDS
+
+
+def _maybe_send_login_reminder(
+    discord_token: str | None,
+    discord_channel_id: int | None,
+    *,
+    title: str,
+    description: str,
+) -> None:
+    """Best-effort Discord nudge that the weekly login is due.
+
+    No-op when Discord isn't configured. A failed reminder must never block the
+    command's primary outcome, so all errors are swallowed.
+    """
+    if not discord_token or not discord_channel_id:
+        return
+    try:
+        anyio.run(
+            functools.partial(
+                send_discord_notification,
+                token=discord_token,
+                channel_id=int(discord_channel_id),
+                title=title,
+                description=description,
+            ),
+            backend="asyncio",
+        )
+    except Exception:  # pragma: no cover - best-effort notification
+        pass
 
 
 @click.group()
@@ -54,19 +88,11 @@ def cli():
     default="https://127.0.0.1:8182",
     help="Schwab callback URL",
 )
-@click.option(
-    "--base-url",
-    type=str,
-    envvar="SCHWAB_BASE_URL",
-    default="https://api.schwabapi.com",
-    help="Schwab API base URL",
-)
 def auth(
     token_path: str,
     client_id: str | None,
     client_secret: str | None,
     callback_url: str,
-    base_url: str,
 ) -> int:
     """Initialize Schwab client authentication."""
     creds = tokens.load_credentials(tokens.credentials_path(APP_NAME))
@@ -92,7 +118,6 @@ def auth(
             callback_url=callback_url,
             token_manager=token_manager,
             max_token_age=TOKEN_MAX_AGE_SECONDS,
-            base_url=base_url,
         )
 
         # If we get here, the authentication was successful
@@ -132,13 +157,6 @@ def auth(
     envvar="SCHWAB_CALLBACK_URL",
     default="https://127.0.0.1:8182",
     help="Schwab callback URL",
-)
-@click.option(
-    "--base-url",
-    type=str,
-    envvar="SCHWAB_BASE_URL",
-    default="https://api.schwabapi.com",
-    help="Schwab API base URL",
 )
 @click.option(
     "--jesus-take-the-wheel",
@@ -190,7 +208,6 @@ def server(
     client_id: str | None,
     client_secret: str | None,
     callback_url: str,
-    base_url: str,
     jesus_take_the_wheel: bool,
     discord_token: str | None,
     discord_channel_id: int | None,
@@ -220,6 +237,11 @@ def server(
     token_manager = tokens.Manager(token_path)
 
     try:
+        # max_token_age=None so a stale-but-refreshable token is never discarded.
+        # (With interactive=False, discarding it would fall into a browserless
+        # login flow that just hangs ~300s and then 500s.) schwab-py silently
+        # refreshes the access token on the first authenticated call; we gate the
+        # true 7-day refresh-token cliff explicitly below.
         client = schwab_auth.easy_client(
             client_id=client_id,
             client_secret=client_secret,
@@ -228,8 +250,7 @@ def server(
             asyncio=True,
             interactive=False,
             enforce_enums=False,
-            max_token_age=TOKEN_MAX_AGE_SECONDS,
-            base_url=base_url,
+            max_token_age=None,
         )
 
         if not isinstance(client, AsyncClient):
@@ -247,10 +268,22 @@ def server(
         )
         return 1
 
-    # Check token age
-    if client.token_age() >= TOKEN_MAX_AGE_SECONDS:
+    # Only refuse to start at Schwab's true ~7-day refresh-token cliff (minus a
+    # safety margin) — not prematurely. Below the cliff the token is still
+    # refreshable and the server works normally.
+    if client.token_age() >= schwab_auth.REAUTH_THRESHOLD_SECONDS:
+        _maybe_send_login_reminder(
+            discord_token,
+            discord_channel_id,
+            title="Schwab weekly login required",
+            description=(
+                "Your Schwab refresh token has reached its ~7-day limit. "
+                "Run `schwab-mcp auth` to re-authenticate (browser + 2FA)."
+            ),
+        )
         send_error_response(
-            "Token is older than 5 days. Please run 'schwab-mcp auth' to re-authenticate.",
+            "Schwab refresh token has reached its ~7-day limit. "
+            "Please run 'schwab-mcp auth' to re-authenticate.",
             code=401,
             details={
                 "token_expired": True,
@@ -353,6 +386,268 @@ def save_credentials(client_id: str, client_secret: str) -> None:
     path = tokens.credentials_path(APP_NAME)
     tokens.save_credentials(path, client_id, client_secret)
     click.echo(f"Credentials saved to: {path}")
+
+
+@cli.command("refresh-token")
+@click.option(
+    "--token-path",
+    type=str,
+    default=tokens.token_path(APP_NAME),
+    help="Path to Schwab token file",
+)
+@click.option(
+    "--client-id",
+    type=str,
+    required=False,
+    default=None,
+    envvar="SCHWAB_CLIENT_ID",
+    help="Schwab Client ID",
+)
+@click.option(
+    "--client-secret",
+    type=str,
+    required=False,
+    default=None,
+    envvar="SCHWAB_CLIENT_SECRET",
+    help="Schwab Client Secret",
+)
+@click.option(
+    "--callback-url",
+    type=str,
+    envvar="SCHWAB_CALLBACK_URL",
+    default="https://127.0.0.1:8182",
+    help="Schwab callback URL",
+)
+@click.option(
+    "--discord-token",
+    type=str,
+    envvar="SCHWAB_MCP_DISCORD_TOKEN",
+    help="Discord bot token used to send the weekly-login reminder.",
+)
+@click.option(
+    "--discord-channel-id",
+    type=int,
+    envvar="SCHWAB_MCP_DISCORD_CHANNEL_ID",
+    help="Discord channel ID where the weekly-login reminder is posted.",
+)
+def refresh_token(
+    token_path: str,
+    client_id: str | None,
+    client_secret: str | None,
+    callback_url: str,
+    discord_token: str | None,
+    discord_channel_id: int | None,
+) -> int:
+    """Keep the Schwab token warm (no browser, no 2FA).
+
+    Loads the existing token and makes one trivial authenticated call so
+    schwab-py silently refreshes the access token and rewrites the token file.
+    Run on a schedule (see 'install-scheduler') so the token stays valid all week
+    even when Claude Desktop is closed. Requires a still-valid 7-day refresh
+    token; if it has lapsed, fires a Discord reminder and exits non-zero.
+    """
+    creds = tokens.load_credentials(tokens.credentials_path(APP_NAME))
+    client_id = client_id or creds.get("client_id")
+    client_secret = client_secret or creds.get("client_secret")
+    if not client_id or not client_secret:
+        click.echo(
+            "Error: client-id and client-secret are required. "
+            "Provide via --client-id/--client-secret, env vars, "
+            "or store in credentials file with 'schwab-mcp save-credentials'.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    token_manager = tokens.Manager(token_path)
+    if not token_manager.exists():
+        click.echo(
+            f"No token file at {token_path}. Run 'schwab-mcp auth' first.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    try:
+        client = schwab_auth.easy_client(
+            client_id=client_id,
+            client_secret=client_secret,
+            callback_url=callback_url,
+            token_manager=token_manager,
+            asyncio=True,
+            interactive=False,
+            enforce_enums=False,
+            max_token_age=None,
+        )
+    except Exception as e:
+        click.echo(f"Error initializing Schwab client: {e}", err=True)
+        raise SystemExit(1)
+
+    auth_expired = False
+
+    async def _warm() -> None:
+        nonlocal auth_expired
+        try:
+            response = await client.get_account_numbers()
+            body = getattr(response, "text", "") or ""
+            if response.status_code == 401 and "invalid_client" in body:
+                auth_expired = True
+                return
+            response.raise_for_status()
+        finally:
+            close = getattr(client, "close_async_session", None)
+            if close is not None:
+                await close()
+
+    try:
+        anyio.run(_warm, backend="asyncio")
+    except Exception as e:
+        click.echo(f"Token refresh failed: {e}", err=True)
+        raise SystemExit(1)
+
+    if auth_expired:
+        _maybe_send_login_reminder(
+            discord_token,
+            discord_channel_id,
+            title="Schwab weekly login expired",
+            description=(
+                "Your Schwab refresh token has lapsed (past its 7-day limit). "
+                "Run `schwab-mcp auth` to re-authenticate (browser + 2FA)."
+            ),
+        )
+        click.echo(
+            "Schwab refresh token has expired. Run 'schwab-mcp auth' to "
+            "re-authenticate.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    click.echo(f"Token refreshed: {token_path}")
+    return 0
+
+
+def _keepwarm_plist_dict(
+    *,
+    label: str,
+    executable: str,
+    interval: int,
+    log_path: str,
+    env: dict[str, str],
+) -> dict:
+    """Build the launchd plist payload for the keep-warm job."""
+    return {
+        "Label": label,
+        "ProgramArguments": [executable, "refresh-token"],
+        "EnvironmentVariables": env,
+        "StartInterval": interval,
+        "RunAtLoad": True,
+        "StandardOutPath": log_path,
+        "StandardErrorPath": log_path,
+    }
+
+
+@cli.command("install-scheduler")
+@click.option(
+    "--interval",
+    type=int,
+    default=1800,
+    show_default=True,
+    help="Seconds between keep-warm runs (default 30 min).",
+)
+@click.option(
+    "--label",
+    type=str,
+    default="com.user.schwab-mcp-keepwarm",
+    show_default=True,
+    help="launchd job label / plist filename.",
+)
+@click.option(
+    "--discord-token",
+    type=str,
+    envvar="SCHWAB_MCP_DISCORD_TOKEN",
+    help="Discord bot token passed to the scheduled job for reminders.",
+)
+@click.option(
+    "--discord-channel-id",
+    type=int,
+    envvar="SCHWAB_MCP_DISCORD_CHANNEL_ID",
+    help="Discord channel ID passed to the scheduled job for reminders.",
+)
+@click.option(
+    "--load/--no-load",
+    "load_job",
+    default=True,
+    show_default=True,
+    help="Run 'launchctl load' after writing the plist.",
+)
+def install_scheduler(
+    interval: int,
+    label: str,
+    discord_token: str | None,
+    discord_channel_id: int | None,
+    load_job: bool,
+) -> int:
+    """Install a macOS launchd job that runs 'refresh-token' on a schedule.
+
+    Writes ~/Library/LaunchAgents/<label>.plist and (by default) loads it so the
+    token is kept warm independently of Claude Desktop's on-demand server.
+    """
+    executable = shutil.which("schwab-mcp") or os.path.join(
+        os.path.dirname(sys.executable), "schwab-mcp"
+    )
+    if not os.path.exists(executable):
+        click.echo(
+            f"Could not locate the 'schwab-mcp' executable (looked at {executable}). "
+            "Ensure it is installed and on PATH.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    data_dir = os.path.dirname(tokens.token_path(APP_NAME))
+    log_path = os.path.join(data_dir, "keepwarm.log")
+
+    env: dict[str, str] = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    if discord_token:
+        env["SCHWAB_MCP_DISCORD_TOKEN"] = discord_token
+    if discord_channel_id:
+        env["SCHWAB_MCP_DISCORD_CHANNEL_ID"] = str(discord_channel_id)
+
+    plist = _keepwarm_plist_dict(
+        label=label,
+        executable=executable,
+        interval=interval,
+        log_path=log_path,
+        env=env,
+    )
+
+    dest = os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "wb") as f:
+        f.write(plistlib.dumps(plist))
+    click.echo(f"Wrote launchd plist: {dest}")
+
+    if load_job:
+        # Unload first so re-running the command refreshes an existing job.
+        subprocess.run(
+            ["launchctl", "unload", dest], check=False, capture_output=True
+        )
+        result = subprocess.run(
+            ["launchctl", "load", dest],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            click.echo(
+                f"launchctl load failed: {result.stderr.strip()}", err=True
+            )
+            raise SystemExit(1)
+        click.echo(f"Loaded launchd job '{label}' (every {interval}s).")
+    else:
+        click.echo(
+            f"Plist written but not loaded. Load it with:\n"
+            f"  launchctl load {dest}"
+        )
+
+    return 0
 
 
 def main():
