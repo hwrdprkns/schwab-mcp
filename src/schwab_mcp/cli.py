@@ -10,6 +10,7 @@ from schwab.client import AsyncClient
 
 from schwab_mcp.server import SchwabMCPServer, send_error_response
 from schwab_mcp import auth as schwab_auth
+from schwab_mcp import onepassword
 from schwab_mcp import tokens
 from schwab_mcp.approvals import (
     DiscordApprovalManager,
@@ -50,6 +51,26 @@ def _maybe_send_login_reminder(
         )
     except Exception:  # pragma: no cover - best-effort notification
         pass
+
+
+def _resolve_credentials(
+    client_id: str | None,
+    client_secret: str | None,
+) -> tuple[str | None, str | None]:
+    """Resolve Schwab app credentials.
+
+    Precedence: explicit flag/env value > local credentials file > 1Password
+    (`op://` references in :mod:`schwab_mcp.onepassword`, resolved via the `op`
+    CLI). Returns whatever could be found; callers validate that both are set.
+    """
+    creds = tokens.load_credentials(tokens.credentials_path(APP_NAME))
+    client_id = client_id or creds.get("client_id")
+    client_secret = client_secret or creds.get("client_secret")
+    if not client_id or not client_secret:
+        client_id, client_secret = onepassword.resolve_credentials(
+            client_id, client_secret
+        )
+    return client_id, client_secret
 
 
 @click.group()
@@ -95,9 +116,7 @@ def auth(
     callback_url: str,
 ) -> int:
     """Initialize Schwab client authentication."""
-    creds = tokens.load_credentials(tokens.credentials_path(APP_NAME))
-    client_id = client_id or creds.get("client_id")
-    client_secret = client_secret or creds.get("client_secret")
+    client_id, client_secret = _resolve_credentials(client_id, client_secret)
     if not client_id or not client_secret:
         click.echo(
             "Error: client-id and client-secret are required. "
@@ -217,9 +236,7 @@ def server(
     json_output: bool,
 ) -> int:
     """Run the Schwab MCP server."""
-    creds = tokens.load_credentials(tokens.credentials_path(APP_NAME))
-    client_id = client_id or creds.get("client_id")
-    client_secret = client_secret or creds.get("client_secret")
+    client_id, client_secret = _resolve_credentials(client_id, client_secret)
     if not client_id or not client_secret:
         send_error_response(
             "client-id and client-secret are required. "
@@ -446,9 +463,7 @@ def refresh_token(
     even when Claude Desktop is closed. Requires a still-valid 7-day refresh
     token; if it has lapsed, fires a Discord reminder and exits non-zero.
     """
-    creds = tokens.load_credentials(tokens.credentials_path(APP_NAME))
-    client_id = client_id or creds.get("client_id")
-    client_secret = client_secret or creds.get("client_secret")
+    client_id, client_secret = _resolve_credentials(client_id, client_secret)
     if not client_id or not client_secret:
         click.echo(
             "Error: client-id and client-secret are required. "

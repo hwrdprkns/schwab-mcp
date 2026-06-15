@@ -92,6 +92,10 @@ class TestAuthCredentialsFile:
         monkeypatch.setattr(cli.tokens, "credentials_path", lambda app: str(creds_path))
         monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
         monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+        # Simulate 1Password having nothing (or the op CLI being unavailable).
+        monkeypatch.setattr(
+            cli.onepassword, "resolve_credentials", lambda cid, secret: (cid, secret)
+        )
 
         runner = CliRunner()
         result = runner.invoke(
@@ -189,6 +193,10 @@ class TestServerCredentialsFile:
         monkeypatch.setattr(cli.tokens, "credentials_path", lambda app: str(creds_path))
         monkeypatch.delenv("SCHWAB_CLIENT_ID", raising=False)
         monkeypatch.delenv("SCHWAB_CLIENT_SECRET", raising=False)
+        # Simulate 1Password having nothing (or the op CLI being unavailable).
+        monkeypatch.setattr(
+            cli.onepassword, "resolve_credentials", lambda cid, secret: (cid, secret)
+        )
 
         runner = CliRunner()
         result = runner.invoke(
