@@ -12,6 +12,7 @@ from schwab.client import AsyncClient
 
 from schwab_mcp.tools import register_tools
 from schwab_mcp.resources import register_resources
+from schwab_mcp.config import PersonalConfig
 from schwab_mcp.context import SchwabServerContext
 from schwab_mcp.approvals import ApprovalManager
 
@@ -22,13 +23,16 @@ logger = logging.getLogger(__name__)
 def _client_lifespan(
     client: AsyncClient,
     approval_manager: ApprovalManager,
+    config: PersonalConfig,
 ) -> Callable[[FastMCP], AsyncContextManager[SchwabServerContext]]:
     """Create a FastMCP lifespan context that exposes the Schwab async client."""
 
     @asynccontextmanager
     async def lifespan(_: FastMCP) -> AsyncGenerator[SchwabServerContext, None]:
         await approval_manager.start()
-        context = SchwabServerContext(client=client, approval_manager=approval_manager)
+        context = SchwabServerContext(
+            client=client, approval_manager=approval_manager, config=config
+        )
         try:
             yield context
         finally:
@@ -58,6 +62,7 @@ class SchwabMCPServer:
         allow_write: bool,
         enable_technical_tools: bool = True,
         use_json: bool = False,
+        config: PersonalConfig | None = None,
     ) -> None:
         result_transform: Callable[[Any], Any] | None = None
         if not use_json:
@@ -78,7 +83,9 @@ class SchwabMCPServer:
 
         self._server = FastMCP(
             name=name,
-            lifespan=_client_lifespan(client, approval_manager),
+            lifespan=_client_lifespan(
+                client, approval_manager, config or PersonalConfig.empty()
+            ),
         )
         register_tools(
             self._server,

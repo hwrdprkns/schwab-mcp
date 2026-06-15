@@ -10,6 +10,7 @@ from schwab.client import AsyncClient
 
 from schwab_mcp.server import SchwabMCPServer, send_error_response
 from schwab_mcp import auth as schwab_auth
+from schwab_mcp import config as appconfig
 from schwab_mcp import onepassword
 from schwab_mcp import tokens
 from schwab_mcp.approvals import (
@@ -395,6 +396,7 @@ def server(
             allow_write=allow_write,
             enable_technical_tools=not no_technical_tools,
             use_json=json_output,
+            config=appconfig.load_config(appconfig.config_path(APP_NAME)),
         )
         anyio.run(server.run, backend="asyncio")
         return 0
@@ -688,6 +690,27 @@ def install_scheduler(
             f"  launchctl load {dest}"
         )
 
+    return 0
+
+
+@cli.command("show-config")
+def show_config() -> int:
+    """Print the resolved personal config (default account, nicknames, risk limits)."""
+    path = appconfig.config_path(APP_NAME)
+    cfg = appconfig.load_config(path)
+    click.echo(f"Config file: {path}")
+    click.echo(f"Default account: {cfg.default_account or '(none)'}")
+    click.echo(f"Account nicknames: {cfg.accounts or '(none)'}")
+    risk = cfg.risk
+    click.echo("Risk policy:")
+    click.echo(f"  max_order_notional:   {risk.max_order_notional}")
+    click.echo(f"  max_quantity:         {risk.max_quantity}")
+    click.echo(f"  max_buying_power_pct: {risk.max_buying_power_pct}")
+    click.echo(f"  enforce_buying_power: {risk.enforce_buying_power}")
+    click.echo(f"  block_on_margin_call: {risk.block_on_margin_call}")
+    click.echo(f"  fail_open_on_error:   {risk.fail_open_on_error}")
+    click.echo(f"  symbol_allow:         {list(risk.symbol_allow) or '(any)'}")
+    click.echo(f"  symbol_deny:          {list(risk.symbol_deny) or '(none)'}")
     return 0
 
 

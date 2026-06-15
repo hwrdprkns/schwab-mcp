@@ -42,20 +42,26 @@ async def get_accounts_with_positions(
 
 async def get_account(
     ctx: SchwabContext,
-    account_hash: Annotated[str, "Account hash for the Schwab account"],
+    account_hash: Annotated[
+        str | None,
+        "Account hash, account number, or configured nickname. Omit to use the default account.",
+    ] = None,
 ) -> JSONType:
     """
-    Returns balance/info for a specific account via account_hash (from get_account_numbers). Includes funds, cash, margin info.
+    Returns balance/info for a specific account. Accepts an account hash, account number, or nickname; omit to use the default. Includes funds, cash, margin info.
     """
     return await call(ctx.accounts.get_account, account_hash)
 
 
 async def get_account_with_positions(
     ctx: SchwabContext,
-    account_hash: Annotated[str, "Account hash for the Schwab account"],
+    account_hash: Annotated[
+        str | None,
+        "Account hash, account number, or configured nickname. Omit to use the default account.",
+    ] = None,
 ) -> JSONType:
     """
-    Returns balance, info, and positions for a specific account via account_hash. Includes holdings, quantity, cost basis, unrealized gain/loss.
+    Returns balance, info, and positions for a specific account. Accepts an account hash, account number, or nickname; omit to use the default. Includes holdings, quantity, cost basis, unrealized gain/loss.
     """
     return await call(
         ctx.accounts.get_account,

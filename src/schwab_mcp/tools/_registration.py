@@ -13,8 +13,10 @@ from typing import Annotated, Any, Union, cast, get_args, get_origin, get_type_h
 
 from mcp.server.fastmcp import FastMCP, Context as MCPContext
 from mcp.types import ToolAnnotations
+from schwab_mcp import risk
 from schwab_mcp.context import SchwabContext
 from schwab_mcp.approvals import ApprovalDecision, ApprovalRequest
+from schwab_mcp.tools._accounts import resolve_account_hash
 
 
 logger = logging.getLogger(__name__)
@@ -110,6 +112,50 @@ def _ensure_schwab_context(func: ToolFn) -> ToolFn:
             for key, value in module_globals.items():
                 wrapper_globals.setdefault(key, value)
 
+    return wrapper
+
+
+def _copy_module_globals(func: ToolFn, wrapper: ToolFn) -> None:
+    """Keep annotations referencing the original module's names resolvable."""
+    wrapper_globals = cast(dict[str, Any], getattr(wrapper, "__globals__", {}))
+    module = inspect.getmodule(func)
+    if module is not None:
+        module_globals = vars(module)
+        if wrapper_globals is not module_globals:
+            for key, value in module_globals.items():
+                wrapper_globals.setdefault(key, value)
+
+
+def _resolve_account(func: ToolFn) -> ToolFn:
+    """Resolve an ``account_hash`` argument (nickname/number/default) to a hash.
+
+    Applied to any tool with an ``account_hash`` parameter. Runs after context
+    normalization, so it sees a real :class:`SchwabContext`. Real hashes pass
+    through without a lookup (see ``tools._accounts.resolve_account_hash``).
+    """
+    signature, ctx_params = _resolve_context_parameters(func)
+    if "account_hash" not in signature.parameters or not ctx_params:
+        return func
+
+    @functools.wraps(func)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        bound = signature.bind_partial(*args, **kwargs)
+        context: SchwabContext | None = None
+        for name in ctx_params:
+            value = bound.arguments.get(name)
+            if isinstance(value, SchwabContext):
+                context = value
+                break
+        if context is not None:
+            bound.arguments["account_hash"] = await resolve_account_hash(
+                context, bound.arguments.get("account_hash")
+            )
+        result = func(*bound.args, **bound.kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    _copy_module_globals(func, wrapper)
     return wrapper
 
 
@@ -219,6 +265,59 @@ def _wrap_with_approval(func: ToolFn) -> ToolFn:
     return wrapper
 
 
+def _wrap_with_risk(func: ToolFn) -> ToolFn:
+    """Gate a write tool on the configured risk policy, before approval.
+
+    Mirrors ``_wrap_with_approval``'s context handling (converting an MCP context
+    to a typed one and passing it down). Raises ``risk.RiskViolation``
+    (a ``PermissionError``) when a limit is exceeded. Runs independently of the
+    approval manager, so it also caps ``--jesus-take-the-wheel`` mode.
+    """
+    signature, ctx_params = _resolve_context_parameters(func)
+    if not ctx_params:
+        raise TypeError(
+            f"Write tool '{func.__name__}' must accept a SchwabContext for risk gating."
+        )
+
+    @functools.wraps(func)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        bound = signature.bind_partial(*args, **kwargs)
+        context: SchwabContext | None = None
+        for name in ctx_params:
+            value = bound.arguments.get(name)
+            if isinstance(value, SchwabContext):
+                context = value
+                continue
+            if isinstance(value, MCPContext):
+                converted = SchwabContext.model_construct(
+                    _request_context=value.request_context,
+                    _fastmcp=getattr(value, "_fastmcp", None),
+                )
+                bound.arguments[name] = converted
+                context = converted
+                continue
+
+        if context is None:
+            raise RuntimeError(
+                f"Write tool '{func.__name__}' missing SchwabContext during invocation."
+            )
+
+        arguments = {
+            name: value
+            for name, value in bound.arguments.items()
+            if name not in ctx_params
+        }
+        await risk.enforce(context, func.__name__, arguments)
+
+        result = func(*bound.args, **bound.kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    _copy_module_globals(func, wrapper)
+    return wrapper
+
+
 def _start_approval_keepalive(context: SchwabContext) -> asyncio.Task[None] | None:
     if not _has_progress_token(context):
         return None
@@ -298,9 +397,11 @@ def register_tool(
 ) -> None:
     """Register a Schwab tool using FastMCP's decorator plumbing."""
 
+    func = _resolve_account(func)
     func = _ensure_schwab_context(func)
     if write:
         func = _wrap_with_approval(func)
+        func = _wrap_with_risk(func)
     if result_transform is not None:
         func = _wrap_result_transform(func, result_transform)
 

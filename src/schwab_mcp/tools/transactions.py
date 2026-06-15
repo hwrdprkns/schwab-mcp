@@ -12,8 +12,9 @@ from schwab_mcp.tools.utils import JSONType, call, parse_date
 async def get_transactions(
     ctx: SchwabContext,
     account_hash: Annotated[
-        str, "Account hash for the Schwab account (from get_account_numbers)"
-    ],
+        str | None,
+        "Account hash, number, or nickname. Omit to use the default account.",
+    ] = None,
     start_date: Annotated[
         str | None,
         "Start date ('YYYY-MM-DD', max 60 days past, default 60 days ago)",

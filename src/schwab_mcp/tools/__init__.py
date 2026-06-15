@@ -13,6 +13,7 @@ from schwab_mcp.tools import history as _history
 from schwab_mcp.tools import options as _options
 from schwab_mcp.tools import orders as _orders
 from schwab_mcp.tools import quotes as _quotes
+from schwab_mcp.tools import risk_posture as _risk_posture
 from schwab_mcp.tools import tools as _tools
 from schwab_mcp.tools import technical as _technical
 from schwab_mcp.tools import transactions as _txns
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 _TOOL_MODULES = (
     _tools,
     _account,
+    _risk_posture,
     _history,
     _options,
     _orders,

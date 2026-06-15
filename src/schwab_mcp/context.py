@@ -7,6 +7,7 @@ from schwab.client import AsyncClient
 from mcp.server.fastmcp import Context as MCPContext
 
 from schwab_mcp.approvals import ApprovalManager
+from schwab_mcp.config import PersonalConfig
 
 if TYPE_CHECKING:
     from schwab_mcp.tools._protocols import (
@@ -30,6 +31,7 @@ class SchwabServerContext:
 
     client: AsyncClient
     approval_manager: ApprovalManager
+    config: PersonalConfig = field(default_factory=PersonalConfig.empty)
     tools: ToolsClient = field(init=False)
     accounts: AccountClient = field(init=False)
     price_history: PriceHistoryClient = field(init=False)
@@ -37,6 +39,8 @@ class SchwabServerContext:
     orders: OrdersClient = field(init=False)
     quotes: QuotesClient = field(init=False)
     transactions: TransactionsClient = field(init=False)
+    # Lazily-populated cache of account number -> account hash (see tools._accounts).
+    account_hashes: dict[str, str] | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.tools = cast(ToolsClient, self.client)
@@ -65,6 +69,10 @@ class SchwabContext(MCPContext[Any, SchwabServerContext, Any]):
     @property
     def approvals(self) -> ApprovalManager:
         return self.schwab.approval_manager
+
+    @property
+    def config(self) -> PersonalConfig:
+        return self.schwab.config
 
     @property
     def tools(self) -> ToolsClient:
