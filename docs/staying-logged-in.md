@@ -9,9 +9,6 @@ need: no premature re-auth, and the token kept warm the rest of the week.
 ## TL;DR
 
 ```bash
-# Once: store your app credentials (kept in a 0600 file in the data dir).
-schwab-mcp save-credentials
-
 # Weekly (manual, with your SMS 2FA): mints a fresh 7-day token.
 schwab-mcp auth
 
@@ -20,6 +17,25 @@ schwab-mcp install-scheduler \
   --discord-token "$SCHWAB_MCP_DISCORD_TOKEN" \
   --discord-channel-id "$SCHWAB_MCP_DISCORD_CHANNEL_ID"
 ```
+
+## Credentials (client id / secret)
+
+Resolved in this order: explicit `--client-id`/`--client-secret` or
+`SCHWAB_CLIENT_ID`/`SCHWAB_CLIENT_SECRET` env vars → local credentials file
+(`schwab-mcp save-credentials`) → **1Password** via the `op` CLI.
+
+The 1Password lookups use these (non-secret) references, baked into
+`schwab_mcp/onepassword.py` and overridable via env:
+
+| value         | reference                                   | env override               |
+|---------------|---------------------------------------------|----------------------------|
+| client id     | `op://Private/SCHWAB_OAUTH_APP/client_id`     | `SCHWAB_OP_CLIENT_ID_REF`     |
+| client secret | `op://Private/SCHWAB_OAUTH_APP/client_secret` | `SCHWAB_OP_CLIENT_SECRET_REF` |
+
+So with `op` signed in, `schwab-mcp auth` / `server` / `refresh-token` need no
+credential flags at all. The secrets are read at runtime and never written to
+the repo. If `op` is missing or signed out, you'll get the usual "client-id and
+client-secret are required" error — fall back to env vars or `save-credentials`.
 
 The token lives at a **global** path
 (`platformdirs.user_data_dir("schwab-mcp")/token.yaml`), independent of which
