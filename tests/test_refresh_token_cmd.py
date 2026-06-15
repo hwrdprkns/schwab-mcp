@@ -114,6 +114,55 @@ def test_refresh_token_fires_reminder_when_expired(monkeypatch, tmp_path):
     assert "auth" in reminders[0]["description"]
 
 
+def test_refresh_token_invalid_grant_exception_fires_reminder(monkeypatch, tmp_path):
+    """schwab-py raises invalid_grant during refresh when the 7-day token lapsed."""
+    reminders: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        cli, "_maybe_send_login_reminder", lambda *a, **k: reminders.append(k)
+    )
+
+    class _RaisingClient:
+        async def get_account_numbers(self):
+            raise RuntimeError(
+                'unsupported_token_type: 400 Bad Request: '
+                '{"error":"invalid_grant",'
+                '"error_description":"Refresh token is invalid, expired or revoked"}'
+            )
+
+        async def close_async_session(self):
+            return None
+
+    class DummyManager:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+        def exists(self) -> bool:
+            return True
+
+    monkeypatch.setattr(cli.tokens, "Manager", DummyManager)
+    monkeypatch.setattr(
+        cli.schwab_auth, "easy_client", lambda **kwargs: _RaisingClient()
+    )
+
+    result = CliRunner().invoke(
+        cli.cli,
+        [
+            "refresh-token",
+            "--token-path",
+            str(tmp_path / "token.yaml"),
+            "--client-id",
+            "cid",
+            "--client-secret",
+            "secret",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert len(reminders) == 1
+    assert "auth" in reminders[0]["description"]
+
+
 def test_refresh_token_requires_existing_token(monkeypatch, tmp_path):
     class MissingManager:
         def __init__(self, path: str) -> None:

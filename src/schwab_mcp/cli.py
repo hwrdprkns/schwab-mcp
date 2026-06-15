@@ -53,6 +53,26 @@ def _maybe_send_login_reminder(
         pass
 
 
+def _is_reauth_required_error(text: str) -> bool:
+    """True if a Schwab error means the refresh token must be re-minted.
+
+    Covers what Schwab actually returns when the 7-day refresh token has lapsed
+    or been revoked: a ``400 invalid_grant`` ("Refresh token is invalid, expired
+    or revoked") / ``unsupported_token_type`` at the token endpoint, plus
+    ``401 invalid_client``.
+    """
+    lowered = text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "invalid_grant",
+            "invalid_client",
+            "unsupported_token_type",
+            "refresh token is invalid",
+        )
+    )
+
+
 def _resolve_credentials(
     client_id: str | None,
     client_secret: str | None,
@@ -503,7 +523,7 @@ def refresh_token(
         try:
             response = await client.get_account_numbers()
             body = getattr(response, "text", "") or ""
-            if response.status_code == 401 and "invalid_client" in body:
+            if response.status_code in (400, 401) and _is_reauth_required_error(body):
                 auth_expired = True
                 return
             response.raise_for_status()
@@ -515,8 +535,14 @@ def refresh_token(
     try:
         anyio.run(_warm, backend="asyncio")
     except Exception as e:
-        click.echo(f"Token refresh failed: {e}", err=True)
-        raise SystemExit(1)
+        # schwab-py raises during the silent token refresh when the refresh
+        # token has lapsed/been revoked — surface that as the weekly-login nudge
+        # rather than an opaque failure.
+        if _is_reauth_required_error(str(e)):
+            auth_expired = True
+        else:
+            click.echo(f"Token refresh failed: {e}", err=True)
+            raise SystemExit(1)
 
     if auth_expired:
         _maybe_send_login_reminder(
