@@ -69,6 +69,52 @@ def test_option_notional_uses_100x_multiplier():
         enforce(ctx, "place_option_order", {"symbol": "SPY__C", "quantity": 2, "price": 6})
 
 
+def _spec(symbol, qty, price=None, stop=None):
+    leg = {"instruction": "SELL", "instrument": {"symbol": symbol}, "quantity": qty}
+    spec = {"orderType": "LIMIT", "orderLegCollection": [leg]}
+    if price is not None:
+        spec["price"] = price
+    if stop is not None:
+        spec["stopPrice"] = stop
+    return spec
+
+
+def test_oco_spec_symbol_deny_is_enforced():
+    # OCO/trigger tools pass pre-built spec dicts (no top-level symbol/quantity);
+    # the guardrail must still inspect the nested legs.
+    ctx = make_ctx(RiskPolicy(symbol_deny=("GME",)))
+    args = {
+        "account_hash": "H",
+        "first_order_spec": _spec("GME", 1, price=100),
+        "second_order_spec": _spec("GME", 1, stop=50),
+    }
+    with pytest.raises(risk.RiskViolation, match="deny list"):
+        enforce(ctx, "place_one_cancels_other_order", args)
+
+
+def test_trigger_spec_quantity_is_enforced():
+    ctx = make_ctx(RiskPolicy(max_quantity=100))
+    args = {
+        "account_hash": "H",
+        "first_order_spec": _spec("SPY", 500, price=10),
+        "second_order_spec": _spec("SPY", 500, stop=5),
+    }
+    with pytest.raises(risk.RiskViolation, match="max_quantity"):
+        enforce(ctx, "place_first_triggers_second_order", args)
+
+
+def test_oco_spec_notional_is_enforced():
+    ctx = make_ctx(RiskPolicy(max_order_notional=1000))
+    # 50 sh total * $40 (highest spec price) = $2000 > $1000
+    args = {
+        "account_hash": "H",
+        "first_order_spec": _spec("SPY", 25, price=40),
+        "second_order_spec": _spec("SPY", 25, stop=30),
+    }
+    with pytest.raises(risk.RiskViolation, match="max_order_notional"):
+        enforce(ctx, "place_one_cancels_other_order", args)
+
+
 def test_cancel_order_is_exempt():
     ctx = make_ctx(RiskPolicy(max_quantity=1, symbol_deny=("ANY",)))
     # No symbol/quantity, and exempt anyway -> no raise.

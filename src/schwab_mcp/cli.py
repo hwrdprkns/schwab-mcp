@@ -164,8 +164,9 @@ def auth(
         click.echo(f"Authentication successful! Token saved to: {token_path}")
         return 0
     except Exception as e:
+        # raise SystemExit so the shell sees a non-zero exit (Click drops `return 1`).
         click.echo(f"Authentication failed: {str(e)}", err=True)
-        return 1
+        raise SystemExit(1)
 
 
 @cli.command("server")

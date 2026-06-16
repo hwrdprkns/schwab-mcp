@@ -32,15 +32,57 @@ _EXEMPT_TOOLS = {"cancel_order"}
 _OPTION_TOOLS = {"place_option_order", "place_option_combo_order"}
 
 
-def _legs(arguments: Mapping[str, Any]) -> list[dict[str, Any]]:
-    legs = arguments.get("legs")
-    return [leg for leg in legs if isinstance(leg, dict)] if isinstance(legs, list) else []
+# Args that carry pre-built order specs (OCO / trigger tools).
+_SPEC_KEYS = ("first_order_spec", "second_order_spec", "order_spec")
+
+
+def _leg_symbol(leg: Any) -> str | None:
+    if not isinstance(leg, dict):
+        return None
+    symbol = leg.get("symbol")
+    if symbol:
+        return str(symbol)
+    instrument = leg.get("instrument")
+    if isinstance(instrument, dict) and instrument.get("symbol"):
+        return str(instrument["symbol"])
+    return None
+
+
+def _leg_quantity(leg: Any) -> float | None:
+    if isinstance(leg, dict):
+        q = leg.get("quantity")
+        if isinstance(q, (int, float)):
+            return abs(float(q))
+    return None
+
+
+def _spec_legs(spec: Any) -> list[Any]:
+    """Flatten orderLegCollection from a built order-spec dict (recursing children)."""
+    legs: list[Any] = []
+    if not isinstance(spec, dict):
+        return legs
+    for leg in spec.get("orderLegCollection") or []:
+        legs.append(leg)
+    for child in spec.get("childOrderStrategies") or []:
+        legs.extend(_spec_legs(child))
+    return legs
+
+
+def _all_legs(arguments: Mapping[str, Any]) -> list[Any]:
+    """Order legs from a flat ``legs`` arg AND any pre-built order-spec dicts."""
+    legs: list[Any] = []
+    raw = arguments.get("legs")
+    if isinstance(raw, list):
+        legs.extend(leg for leg in raw if isinstance(leg, dict))
+    for key in _SPEC_KEYS:
+        legs.extend(_spec_legs(arguments.get(key)))
+    return legs
 
 
 def _symbols(arguments: Mapping[str, Any]) -> list[str]:
-    legs = _legs(arguments)
-    if legs:
-        return [str(leg["symbol"]) for leg in legs if leg.get("symbol")]
+    symbols = [s for s in (_leg_symbol(leg) for leg in _all_legs(arguments)) if s]
+    if symbols:
+        return symbols
     symbol = arguments.get("symbol")
     return [str(symbol)] if symbol else []
 
@@ -51,18 +93,25 @@ def _primary_symbol(arguments: Mapping[str, Any]) -> str | None:
 
 
 def _total_quantity(arguments: Mapping[str, Any]) -> float | None:
-    legs = _legs(arguments)
-    if legs:
-        total = 0.0
-        seen = False
-        for leg in legs:
-            q = leg.get("quantity")
-            if isinstance(q, (int, float)):
-                total += abs(q)
-                seen = True
-        return total if seen else None
+    quantities = [
+        q for q in (_leg_quantity(leg) for leg in _all_legs(arguments)) if q is not None
+    ]
+    if quantities:
+        return sum(quantities)
     q = arguments.get("quantity")
-    return float(q) if isinstance(q, (int, float)) else None
+    return abs(float(q)) if isinstance(q, (int, float)) else None
+
+
+def _spec_prices(spec: Any) -> list[float]:
+    prices: list[float] = []
+    if isinstance(spec, dict):
+        for key in ("price", "stopPrice"):
+            v = spec.get(key)
+            if isinstance(v, (int, float)) and v > 0:
+                prices.append(float(v))
+        for child in spec.get("childOrderStrategies") or []:
+            prices.extend(_spec_prices(child))
+    return prices
 
 
 def _explicit_price(arguments: Mapping[str, Any]) -> float | None:
@@ -70,7 +119,11 @@ def _explicit_price(arguments: Mapping[str, Any]) -> float | None:
         v = arguments.get(key)
         if isinstance(v, (int, float)) and v > 0:
             return float(v)
-    return None
+    # Pre-built specs carry their price nested; use the highest (conservative).
+    prices: list[float] = []
+    for key in _SPEC_KEYS:
+        prices.extend(_spec_prices(arguments.get(key)))
+    return max(prices) if prices else None
 
 
 async def _mark_price(ctx: "SchwabContext", symbol: str) -> float | None:
